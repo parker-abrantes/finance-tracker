@@ -95,7 +95,7 @@ function ProgramCard({ prog, summary, selected, onClick }) {
   );
 }
 
-function VarianceTable({ pid, onQuery }) {
+function VarianceTable({ pid, progName, onQuery }) {
   const [rows, setRows] = useState([]);
   const [cpi, setCpi] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -142,7 +142,7 @@ function VarianceTable({ pid, onQuery }) {
   const exportCsv = () => {
     const today = new Date().toISOString().split("T")[0];
     const meta = `Program,${pid}\nReport Date,${today}\n\n`;
-    const header = "Cost Element,Budget,Actual,Variance,Var %,EAC,Status\n";
+    const header = "Cost Element,Budget,Actual,Variance,Variance %,EAC,Status\n";
     const body = rows.map((row) => {
       const { cost_element, budget, actual, variance, variance_pct } = row;
       const eac = cpi > 0 ? (budget / cpi).toFixed(2) : actual.toFixed(2);
@@ -153,7 +153,8 @@ function VarianceTable({ pid, onQuery }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `variance-${pid}-${today}.csv`;
+    const slug = (progName || pid).replace(/[^a-zA-Z0-9]+/g, "-").replace(/-+$/, "");
+    a.download = `${pid}-${slug}-variance.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -403,7 +404,7 @@ export default function App() {
             {/* Left: variance table */}
             <div style={{ flex: 1.6 }}>
               <div style={styles.sectionTitle}>COST ELEMENT VARIANCE ANALYSIS</div>
-              <VarianceTable pid={selected} onQuery={setActiveQuery} />
+              <VarianceTable pid={selected} progName={programs.find((p) => p.id === selected)?.name} onQuery={setActiveQuery} />
             </div>
 
             {/* Right: burn chart */}
