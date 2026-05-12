@@ -1,96 +1,49 @@
-import { useState, useMemo } from "react";
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { useState, useEffect } from "react";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
-// ── Simulated SQL Database ──────────────────────────────────────────────────
-const DB = {
-  programs: [
-    { id: "P001", name: "LYNX C2 System", contract: "FA8650-24-C-1001", type: "CPFF", period_end: "2026-12-31" },
-    { id: "P002", name: "SHORAD Integration", contract: "W911QY-25-C-0042", type: "FFP", period_end: "2027-06-30" },
-    { id: "P003", name: "TITAN Vehicle Suite", contract: "N00024-24-C-5510", type: "T&M", period_end: "2026-09-30" },
-  ],
-  cost_elements: ["Direct Labor", "Fringe", "Overhead", "ODC", "Travel", "Subcontract", "G&A"],
-  budgets: {
-    P001: { "Direct Labor": 1240000, Fringe: 384400, Overhead: 558000, ODC: 125000, Travel: 48000, Subcontract: 620000, "G&A": 197800 },
-    P002: { "Direct Labor": 880000, Fringe: 272800, Overhead: 396000, ODC: 72000, Travel: 22000, Subcontract: 310000, "G&A": 132400 },
-    P003: { "Direct Labor": 560000, Fringe: 173600, Overhead: 252000, ODC: 38000, Travel: 15000, Subcontract: 180000, "G&A": 88200 },
-  },
-  actuals: {
-    P001: { "Direct Labor": 1318200, Fringe: 408642, Overhead: 527100, ODC: 113400, Travel: 51200, Subcontract: 589000, "G&A": 209800 },
-    P002: { "Direct Labor": 796400, Fringe: 246884, Overhead: 358380, ODC: 80150, Travel: 19800, Subcontract: 334000, "G&A": 119600 },
-    P003: { "Direct Labor": 498200, Fringe: 154442, Overhead: 224190, ODC: 41200, Travel: 12400, Subcontract: 162000, "G&A": 79100 },
-  },
-  monthly_burn: {
-    P001: [
-      { month: "Jan", budget: 294583, actual: 268200 },
-      { month: "Feb", budget: 294583, actual: 301400 },
-      { month: "Mar", budget: 294583, actual: 287600 },
-      { month: "Apr", budget: 294583, actual: 322100 },
-      { month: "May", budget: 294583, actual: 341042 },
-    ],
-    P002: [
-      { month: "Jan", budget: 173533, actual: 158200 },
-      { month: "Feb", budget: 173533, actual: 181400 },
-      { month: "Mar", budget: 173533, actual: 167800 },
-      { month: "Apr", budget: 173533, actual: 192600 },
-      { month: "May", budget: 173533, actual: 255214 },
-    ],
-    P003: [
-      { month: "Jan", budget: 140983, actual: 128400 },
-      { month: "Feb", budget: 140983, actual: 134200 },
-      { month: "Mar", budget: 140983, actual: 119800 },
-      { month: "Apr", budget: 140983, actual: 155932 },
-      { month: "May", budget: 140983, actual: 133200 },
-    ],
-  },
-};
+const API = "http://localhost:8000";
 
 // ── SQL Query Simulator ──────────────────────────────────────────────────────
 const QUERIES = {
   variance: (pid) => `SELECT
-  ce.element,
-  b.budgeted,
-  a.actual,
-  (a.actual - b.budgeted) AS variance,
-  ROUND((a.actual - b.budgeted) / b.budgeted * 100, 2) AS var_pct
-FROM cost_elements ce
-JOIN budgets b ON b.program_id = '${pid}'
-JOIN actuals a ON a.program_id = '${pid}'
-WHERE ce.element = b.element
+  b.cost_element,
+  b.amount          AS budget,
+  a.amount          AS actual,
+  (a.amount - b.amount)                          AS variance,
+  ROUND((a.amount - b.amount) / b.amount * 100, 2) AS var_pct
+FROM budgets b
+JOIN actuals a ON a.program_id = b.program_id
+              AND a.cost_element = b.cost_element
+WHERE b.program_id = '${pid}'
 ORDER BY ABS(var_pct) DESC;`,
 
   burnrate: (pid) => `SELECT
   m.month,
-  m.budget_plan,
-  m.actual_cost,
-  SUM(m.actual_cost) OVER (
-    ORDER BY m.month_num
-  ) AS cumulative_actual,
-  SUM(m.budget_plan) OVER (
-    ORDER BY m.month_num
-  ) AS cumulative_budget
+  m.budget,
+  m.actual,
+  SUM(m.actual) OVER (ORDER BY m.month_num) AS cumulative_actual,
+  SUM(m.budget) OVER (ORDER BY m.month_num) AS cumulative_budget
 FROM monthly_burn m
 WHERE m.program_id = '${pid}'
 ORDER BY m.month_num;`,
 
   summary: () => `SELECT
-  p.program_id,
+  p.id            AS program_id,
   p.name,
-  SUM(b.budgeted) AS total_budget,
-  SUM(a.actual)   AS total_actual,
-  SUM(a.actual - b.budgeted) AS total_variance,
-  ROUND(SUM(a.actual)/SUM(b.budgeted)*100,1) AS pct_spent
+  SUM(b.amount)   AS total_budget,
+  SUM(a.amount)   AS total_actual,
+  SUM(a.amount - b.amount)                        AS variance,
+  ROUND(SUM(a.amount) / SUM(b.amount) * 100, 1)  AS pct_spent
 FROM programs p
-JOIN budgets b USING (program_id)
-JOIN actuals a USING (program_id)
-GROUP BY p.program_id
-ORDER BY total_variance DESC;`,
+JOIN budgets b ON b.program_id = p.id
+JOIN actuals a ON a.program_id = p.id AND a.cost_element = b.cost_element
+GROUP BY p.id
+ORDER BY variance DESC;`,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
-
-const pct = (a, b) => (((a - b) / b) * 100).toFixed(1);
 
 const varColor = (v) => {
   if (Math.abs(v) < 3) return "#4ade80";
@@ -118,11 +71,11 @@ function SqlPanel({ query }) {
   );
 }
 
-function ProgramCard({ prog, selected, onClick }) {
-  const budget = Object.values(DB.budgets[prog.id]).reduce((a, b) => a + b, 0);
-  const actual = Object.values(DB.actuals[prog.id]).reduce((a, b) => a + b, 0);
-  const variance = actual - budget;
-  const spent = ((actual / budget) * 100).toFixed(0);
+function ProgramCard({ prog, summary, selected, onClick }) {
+  const budget = summary?.total_budget ?? 0;
+  const actual = summary?.total_actual ?? 0;
+  const variance = summary?.variance ?? 0;
+  const spent = budget > 0 ? ((actual / budget) * 100).toFixed(0) : "0";
 
   return (
     <div onClick={onClick} style={{ ...styles.card, ...(selected ? styles.cardSelected : {}) }}>
@@ -143,54 +96,142 @@ function ProgramCard({ prog, selected, onClick }) {
 }
 
 function VarianceTable({ pid, onQuery }) {
-  const rows = DB.cost_elements.map((el) => {
-    const b = DB.budgets[pid][el];
-    const a = DB.actuals[pid][el];
-    const v = a - b;
-    const vp = parseFloat(pct(a, b));
-    return { el, b, a, v, vp };
-  });
+  const [rows, setRows] = useState([]);
+  const [cpi, setCpi] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [modal, setModal] = useState({ open: false, element: "", amount: "" });
+  const [saving, setSaving] = useState(false);
 
-  useState(() => onQuery(QUERIES.variance(pid)), [pid]);
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    onQuery(QUERIES.variance(pid));
+
+    Promise.all([
+      fetch(`${API}/programs/${pid}/variance`).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
+      fetch(`${API}/programs/${pid}/eac`).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
+    ])
+      .then(([varData, eacData]) => {
+        setRows(varData.rows);
+        setCpi(eacData.cpi);
+        setLoading(false);
+      })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [pid, refreshKey]);
+
+  const openModal = (row) =>
+    setModal({ open: true, element: row.cost_element, amount: String(row.actual) });
+  const closeModal = () => setModal({ open: false, element: "", amount: "" });
+
+  const handleSave = () => {
+    const amount = parseFloat(modal.amount);
+    if (isNaN(amount)) return;
+    setSaving(true);
+    fetch(`${API}/actuals/${pid}/${encodeURIComponent(modal.element)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount }),
+    })
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then(() => { setSaving(false); closeModal(); setRefreshKey((k) => k + 1); })
+      .catch((e) => { setSaving(false); setError(e.message); });
+  };
+
+  if (loading) return <div style={styles.loadingText}>LOADING VARIANCE DATA...</div>;
+  if (error) return <div style={styles.errorText}>ERROR: {error}</div>;
 
   return (
-    <div style={styles.tableWrap}>
-      <table style={styles.table}>
-        <thead>
-          <tr>
-            {["Cost Element", "Budget", "Actual", "Variance", "Var %", "Status"].map((h) => (
-              <th key={h} style={styles.th}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ el, b, a, v, vp }) => (
-            <tr key={el} style={styles.tr}>
-              <td style={styles.td}>{el}</td>
-              <td style={{ ...styles.td, color: "#94a3b8" }}>{fmt(b)}</td>
-              <td style={styles.td}>{fmt(a)}</td>
-              <td style={{ ...styles.td, color: v > 0 ? "#f87171" : "#4ade80" }}>
-                {v > 0 ? "+" : ""}{fmt(v)}
-              </td>
-              <td style={{ ...styles.td, color: varColor(vp), fontFamily: "monospace" }}>
-                {vp > 0 ? "+" : ""}{vp}%
-              </td>
-              <td style={styles.td}>
-                <span style={{ ...styles.badge, background: Math.abs(vp) < 3 ? "#14532d" : vp > 0 ? "#7f1d1d" : "#713f12" }}>
-                  {Math.abs(vp) < 3 ? "ON TRACK" : vp > 0 ? "OVER" : "UNDER"}
-                </span>
-              </td>
+    <>
+      <div style={styles.tableWrap}>
+        <table style={styles.table}>
+          <thead>
+            <tr>
+              {["Cost Element", "Budget", "Actual", "Variance", "Var %", "EAC", "Status", ""].map((h) => (
+                <th key={h} style={styles.th}>{h}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const { cost_element: el, budget: b, actual: a, variance: v, variance_pct: vp } = row;
+              const eac = cpi && cpi > 0 ? b / cpi : a;
+              return (
+                <tr key={el} style={styles.tr}>
+                  <td style={styles.td}>{el}</td>
+                  <td style={{ ...styles.td, color: "#94a3b8" }}>{fmt(b)}</td>
+                  <td style={styles.td}>{fmt(a)}</td>
+                  <td style={{ ...styles.td, color: v > 0 ? "#f87171" : "#4ade80" }}>
+                    {v > 0 ? "+" : ""}{fmt(v)}
+                  </td>
+                  <td style={{ ...styles.td, color: varColor(vp), fontFamily: "monospace" }}>
+                    {vp > 0 ? "+" : ""}{vp}%
+                  </td>
+                  <td style={{ ...styles.td, fontFamily: "monospace", color: "#94a3b8" }}>
+                    {fmt(eac)}
+                  </td>
+                  <td style={styles.td}>
+                    <span style={{ ...styles.badge, background: Math.abs(vp) < 3 ? "#14532d" : vp > 0 ? "#7f1d1d" : "#713f12" }}>
+                      {Math.abs(vp) < 3 ? "ON TRACK" : vp > 0 ? "OVER" : "UNDER"}
+                    </span>
+                  </td>
+                  <td style={styles.td}>
+                    <button onClick={() => openModal(row)} style={styles.editBtn}>EDIT</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {modal.open && (
+        <div style={styles.overlay}>
+          <div style={styles.modalBox}>
+            <div style={styles.modalTitle}>UPDATE ACTUAL · {pid}</div>
+            <div>
+              <div style={styles.modalLabel}>COST ELEMENT</div>
+              <div style={{ ...styles.input, color: "#60a5fa", cursor: "default" }}>{modal.element}</div>
+            </div>
+            <div>
+              <div style={styles.modalLabel}>ACTUAL AMOUNT (USD)</div>
+              <input
+                type="number"
+                value={modal.amount}
+                onChange={(e) => setModal((m) => ({ ...m, amount: e.target.value }))}
+                style={styles.input}
+                autoFocus
+              />
+            </div>
+            <div style={styles.btnRow}>
+              <button onClick={closeModal} style={styles.btnSecondary} disabled={saving}>CANCEL</button>
+              <button onClick={handleSave} style={styles.btnPrimary} disabled={saving}>
+                {saving ? "SAVING..." : "SAVE"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
 function BurnChart({ pid, onQuery }) {
-  const data = DB.monthly_burn[pid];
-  useMemo(() => onQuery(QUERIES.burnrate(pid)), [pid]);
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    onQuery(QUERIES.burnrate(pid));
+
+    fetch(`${API}/programs/${pid}/burn`)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then((d) => { setData(d.months); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, [pid]);
 
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
@@ -206,6 +247,9 @@ function BurnChart({ pid, onQuery }) {
     );
   };
 
+  if (loading) return <div style={{ ...styles.loadingText, height: 220, display: "flex", alignItems: "center" }}>LOADING BURN DATA...</div>;
+  if (error) return <div style={styles.errorText}>ERROR: {error}</div>;
+
   return (
     <ResponsiveContainer width="100%" height={220}>
       <BarChart data={data} barGap={4}>
@@ -220,8 +264,12 @@ function BurnChart({ pid, onQuery }) {
   );
 }
 
-function SummaryTable({ onQuery }) {
-  useMemo(() => onQuery(QUERIES.summary()), []);
+function SummaryTable({ rows, loading, error, onQuery }) {
+  useEffect(() => { onQuery(QUERIES.summary()); }, []);
+
+  if (loading) return <div style={styles.loadingText}>LOADING PORTFOLIO DATA...</div>;
+  if (error) return <div style={styles.errorText}>ERROR: {error}</div>;
+
   return (
     <div style={styles.tableWrap}>
       <table style={styles.table}>
@@ -233,18 +281,15 @@ function SummaryTable({ onQuery }) {
           </tr>
         </thead>
         <tbody>
-          {DB.programs.map((p) => {
-            const budget = Object.values(DB.budgets[p.id]).reduce((a, b) => a + b, 0);
-            const actual = Object.values(DB.actuals[p.id]).reduce((a, b) => a + b, 0);
-            const v = actual - budget;
-            const sp = ((actual / budget) * 100).toFixed(1);
+          {rows.map((row) => {
+            const { program_id, name, contract, type, total_budget, total_actual, variance: v, pct_spent: sp } = row;
             return (
-              <tr key={p.id} style={styles.tr}>
-                <td style={styles.td}><span style={{ color: "#60a5fa" }}>{p.id}</span> {p.name}</td>
-                <td style={{ ...styles.td, fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>{p.contract}</td>
-                <td style={styles.td}><span style={styles.typeBadge}>{p.type}</span></td>
-                <td style={{ ...styles.td, color: "#94a3b8" }}>{fmt(budget)}</td>
-                <td style={styles.td}>{fmt(actual)}</td>
+              <tr key={program_id} style={styles.tr}>
+                <td style={styles.td}><span style={{ color: "#60a5fa" }}>{program_id}</span> {name}</td>
+                <td style={{ ...styles.td, fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>{contract}</td>
+                <td style={styles.td}><span style={styles.typeBadge}>{type}</span></td>
+                <td style={{ ...styles.td, color: "#94a3b8" }}>{fmt(total_budget)}</td>
+                <td style={styles.td}>{fmt(total_actual)}</td>
                 <td style={{ ...styles.td, color: v > 0 ? "#f87171" : "#4ade80" }}>{v > 0 ? "+" : ""}{fmt(v)}</td>
                 <td style={{ ...styles.td, fontFamily: "monospace", color: sp > 100 ? "#f87171" : sp > 90 ? "#facc15" : "#4ade80" }}>{sp}%</td>
               </tr>
@@ -258,11 +303,28 @@ function SummaryTable({ onQuery }) {
 
 // ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const [programs, setPrograms] = useState([]);
+  const [summary, setSummary] = useState([]);
+  const [programsLoading, setProgramsLoading] = useState(true);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState(null);
   const [selected, setSelected] = useState("P001");
-  const [view, setView] = useState("detail"); // "detail" | "summary"
+  const [view, setView] = useState("detail");
   const [activeQuery, setActiveQuery] = useState(QUERIES.variance("P001"));
 
-  const prog = DB.programs.find((p) => p.id === selected);
+  useEffect(() => {
+    fetch(`${API}/programs`)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then((data) => { setPrograms(data); setProgramsLoading(false); })
+      .catch(() => setProgramsLoading(false));
+
+    fetch(`${API}/summary`)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then((data) => { setSummary(data); setSummaryLoading(false); })
+      .catch((e) => { setSummaryError(e.message); setSummaryLoading(false); });
+  }, []);
+
+  const summaryMap = Object.fromEntries(summary.map((s) => [s.program_id, s]));
 
   return (
     <div style={styles.root}>
@@ -274,7 +336,11 @@ export default function App() {
         </div>
         <div style={styles.headerRight}>
           <div style={styles.headerMeta}>FY2026 · Period 5 of 12</div>
-          <div style={styles.headerMeta} onClick={() => setView(view === "detail" ? "summary" : "detail")} role="button" style={{ ...styles.headerMeta, cursor: "pointer", color: "#60a5fa", userSelect: "none" }}>
+          <div
+            role="button"
+            onClick={() => setView(view === "detail" ? "summary" : "detail")}
+            style={{ ...styles.headerMeta, cursor: "pointer", color: "#60a5fa", userSelect: "none" }}
+          >
             {view === "detail" ? "→ PORTFOLIO VIEW" : "→ PROGRAM VIEW"}
           </div>
         </div>
@@ -284,7 +350,12 @@ export default function App() {
         <div style={styles.body}>
           <div style={styles.section}>
             <div style={styles.sectionTitle}>PORTFOLIO SUMMARY</div>
-            <SummaryTable onQuery={setActiveQuery} />
+            <SummaryTable
+              rows={summary}
+              loading={summaryLoading}
+              error={summaryError}
+              onQuery={setActiveQuery}
+            />
           </div>
           <SqlPanel query={activeQuery} />
         </div>
@@ -292,14 +363,18 @@ export default function App() {
         <div style={styles.body}>
           {/* Program selector */}
           <div style={styles.cardRow}>
-            {DB.programs.map((p) => (
-              <ProgramCard
-                key={p.id}
-                prog={p}
-                selected={selected === p.id}
-                onClick={() => { setSelected(p.id); setActiveQuery(QUERIES.variance(p.id)); }}
-              />
-            ))}
+            {programsLoading
+              ? <div style={styles.loadingText}>LOADING PROGRAMS...</div>
+              : programs.map((p) => (
+                <ProgramCard
+                  key={p.id}
+                  prog={p}
+                  summary={summaryMap[p.id]}
+                  selected={selected === p.id}
+                  onClick={() => { setSelected(p.id); setActiveQuery(QUERIES.variance(p.id)); }}
+                />
+              ))
+            }
           </div>
 
           <div style={styles.twoCol}>
@@ -459,5 +534,96 @@ const styles = {
     borderRadius: 4,
     padding: "8px 12px",
     fontSize: 12,
+  },
+  loadingText: {
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: "#475569",
+    letterSpacing: "0.1em",
+    padding: "20px 0",
+  },
+  errorText: {
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: "#f87171",
+    padding: "20px 0",
+  },
+  editBtn: {
+    background: "transparent",
+    border: "1px solid #1e3a5f",
+    color: "#475569",
+    fontFamily: "monospace",
+    fontSize: 10,
+    padding: "2px 7px",
+    borderRadius: 2,
+    cursor: "pointer",
+    letterSpacing: "0.08em",
+  },
+  overlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(2,12,24,0.88)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 100,
+  },
+  modalBox: {
+    background: "#041529",
+    border: "1px solid #0f2744",
+    borderRadius: 4,
+    padding: "24px 28px",
+    width: 360,
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
+  },
+  modalTitle: {
+    fontSize: 10,
+    fontFamily: "monospace",
+    letterSpacing: "0.18em",
+    color: "#3b82f6",
+  },
+  modalLabel: {
+    fontSize: 10,
+    fontFamily: "monospace",
+    color: "#475569",
+    letterSpacing: "0.1em",
+    marginBottom: 5,
+  },
+  input: {
+    width: "100%",
+    background: "#020c18",
+    border: "1px solid #0f2744",
+    borderRadius: 3,
+    color: "#e2e8f0",
+    fontFamily: "monospace",
+    fontSize: 13,
+    padding: "7px 10px",
+    outline: "none",
+    boxSizing: "border-box",
+  },
+  btnRow: { display: "flex", gap: 8, justifyContent: "flex-end" },
+  btnPrimary: {
+    background: "#3b82f6",
+    border: "none",
+    color: "#fff",
+    fontFamily: "monospace",
+    fontSize: 11,
+    padding: "6px 16px",
+    borderRadius: 3,
+    cursor: "pointer",
+    letterSpacing: "0.08em",
+  },
+  btnSecondary: {
+    background: "transparent",
+    border: "1px solid #1e3a5f",
+    color: "#64748b",
+    fontFamily: "monospace",
+    fontSize: 11,
+    padding: "6px 16px",
+    borderRadius: 3,
+    cursor: "pointer",
+    letterSpacing: "0.08em",
   },
 };
