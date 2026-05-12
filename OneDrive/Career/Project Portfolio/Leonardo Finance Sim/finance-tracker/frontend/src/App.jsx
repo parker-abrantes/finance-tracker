@@ -139,11 +139,33 @@ function VarianceTable({ pid, onQuery }) {
       .catch((e) => { setSaving(false); setError(e.message); });
   };
 
+  const exportCsv = () => {
+    const today = new Date().toISOString().split("T")[0];
+    const meta = `Program,${pid}\nReport Date,${today}\n\n`;
+    const header = "Cost Element,Budget,Actual,Variance,Var %,EAC,Status\n";
+    const body = rows.map((row) => {
+      const { cost_element, budget, actual, variance, variance_pct } = row;
+      const eac = cpi > 0 ? (budget / cpi).toFixed(2) : actual.toFixed(2);
+      const status = Math.abs(variance_pct) < 3 ? "ON TRACK" : variance_pct > 0 ? "OVER" : "UNDER";
+      return `"${cost_element}",${budget},${actual},${variance},${variance_pct},${eac},${status}`;
+    }).join("\n");
+    const blob = new Blob([meta + header + body], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `variance-${pid}-${today}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (loading) return <div style={styles.loadingText}>LOADING VARIANCE DATA...</div>;
   if (error) return <div style={styles.errorText}>ERROR: {error}</div>;
 
   return (
     <>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <button onClick={exportCsv} style={styles.csvBtn}>↓ EXPORT CSV</button>
+      </div>
       <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
@@ -625,5 +647,16 @@ const styles = {
     borderRadius: 3,
     cursor: "pointer",
     letterSpacing: "0.08em",
+  },
+  csvBtn: {
+    background: "transparent",
+    border: "1px solid #1e3a5f",
+    color: "#3b82f6",
+    fontFamily: "monospace",
+    fontSize: 10,
+    padding: "3px 10px",
+    borderRadius: 2,
+    cursor: "pointer",
+    letterSpacing: "0.1em",
   },
 };
