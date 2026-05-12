@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite database (auto-created at runtime)
+data/
+
+# Frontend build output
+frontend/dist/
+
+# Dependencies
+frontend/node_modules/
