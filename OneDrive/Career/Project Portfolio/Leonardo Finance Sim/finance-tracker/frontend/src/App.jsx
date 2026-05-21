@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from "recharts";
 
 const API = "http://localhost:8000";
+const MONO = "'IBM Plex Mono', 'Courier New', monospace";
+const SANS = "'IBM Plex Sans', -apple-system, sans-serif";
 
 // ── SQL Query Simulator ──────────────────────────────────────────────────────
 const QUERIES = {
@@ -18,22 +20,19 @@ WHERE b.program_id = '${pid}'
 ORDER BY ABS(var_pct) DESC;`,
 
   burnrate: (pid) => `SELECT
-  m.month,
-  m.budget,
-  m.actual,
-  SUM(m.actual) OVER (ORDER BY m.month_num) AS cumulative_actual,
-  SUM(m.budget) OVER (ORDER BY m.month_num) AS cumulative_budget
+  m.month, m.budget, m.actual,
+  SUM(m.actual) OVER (ORDER BY m.month_num) AS cum_actual,
+  SUM(m.budget) OVER (ORDER BY m.month_num) AS cum_budget
 FROM monthly_burn m
 WHERE m.program_id = '${pid}'
 ORDER BY m.month_num;`,
 
   summary: () => `SELECT
-  p.id            AS program_id,
-  p.name,
-  SUM(b.amount)   AS total_budget,
-  SUM(a.amount)   AS total_actual,
-  SUM(a.amount - b.amount)                        AS variance,
-  ROUND(SUM(a.amount) / SUM(b.amount) * 100, 1)  AS pct_spent
+  p.id AS program_id, p.name,
+  SUM(b.amount) AS total_budget,
+  SUM(a.amount) AS total_actual,
+  SUM(a.amount - b.amount) AS variance,
+  ROUND(SUM(a.amount) / SUM(b.amount) * 100, 1) AS pct_spent
 FROM programs p
 JOIN budgets b ON b.program_id = p.id
 JOIN actuals a ON a.program_id = p.id AND a.cost_element = b.cost_element
@@ -45,13 +44,32 @@ ORDER BY variance DESC;`,
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
 
-const varColor = (v) => {
-  if (Math.abs(v) < 3) return "#4a4a00";
-  if (v > 0) return "#8b2000";
-  return "#2a5a00";
+const fmtShort = (n) => {
+  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return fmt(n);
 };
 
-const SESSION_TS = new Date().toISOString().replace("T", " ").slice(0, 19) + "Z";
+const varColor = (v) => {
+  if (Math.abs(v) < 3) return C.textMuted;
+  if (v > 0) return C.red;
+  return C.green;
+};
+
+const C = {
+  bg:          "#0d1117",
+  surface:     "#161b22",
+  surfaceHigh: "#21262d",
+  border:      "#30363d",
+  borderActive:"#388bfd",
+  text:        "#e6edf3",
+  textMuted:   "#8b949e",
+  textDim:     "#484f58",
+  blue:        "#388bfd",
+  green:       "#3fb950",
+  red:         "#f85149",
+  yellow:      "#d29922",
+};
 
 // ── Components ───────────────────────────────────────────────────────────────
 
@@ -65,10 +83,42 @@ function SqlPanel({ query }) {
   return (
     <div style={styles.sqlPanel}>
       <div style={styles.sqlHeader}>
-        <span style={styles.sqlLabel}>$ QUERY_EXEC &gt;&gt;</span>
-        <button onClick={copy} style={styles.copyBtn}>{copied ? "[COPIED]" : "[COPY]"}</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={styles.sqlDot} />
+          <span style={styles.sqlLabel}>ACTIVE QUERY</span>
+        </div>
+        <button onClick={copy} style={styles.copyBtn}>{copied ? "✓ Copied" : "Copy"}</button>
       </div>
-      <pre style={styles.sqlCode}>{query}<span className="sql-cursor">█</span></pre>
+      <pre style={styles.sqlCode}>{query}</pre>
+    </div>
+  );
+}
+
+function KpiBar({ summary, eacData }) {
+  const budget = summary?.total_budget ?? 0;
+  const actual = summary?.total_actual ?? 0;
+  const cpi = eacData?.cpi;
+  const eac = eacData?.eac;
+  const vac = eacData?.vac;
+  const pct = summary?.pct_spent ?? 0;
+
+  const tiles = [
+    { label: "Total Budget",         value: fmtShort(budget),          sub: "BAC",   color: C.text },
+    { label: "Actual Cost",          value: fmtShort(actual),          sub: "ACWP",  color: pct > 100 ? C.red : C.text },
+    { label: "Cost Performance",     value: cpi ? cpi.toFixed(3) : "—", sub: "CPI", color: !cpi ? C.textMuted : cpi >= 1 ? C.green : C.red },
+    { label: "Est. at Completion",   value: eac ? fmtShort(eac) : "—", sub: "EAC",  color: C.text },
+    { label: "Variance at Compl.",   value: vac ? fmtShort(vac) : "—", sub: "VAC",  color: !vac ? C.textMuted : vac >= 0 ? C.green : C.red },
+  ];
+
+  return (
+    <div style={styles.kpiBar}>
+      {tiles.map((t, i) => (
+        <div key={t.sub} style={{ ...styles.kpiTile, borderLeft: i > 0 ? `1px solid ${C.border}` : "none" }}>
+          <div style={styles.kpiLabel}>{t.label}</div>
+          <div style={{ ...styles.kpiValue, color: t.color }}>{t.value}</div>
+          <div style={styles.kpiSub}>{t.sub}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -77,27 +127,31 @@ function ProgramCard({ prog, summary, selected, onClick }) {
   const budget = summary?.total_budget ?? 0;
   const actual = summary?.total_actual ?? 0;
   const variance = summary?.variance ?? 0;
-  const spent = budget > 0 ? ((actual / budget) * 100).toFixed(0) : "0";
-  const spentNum = Number(spent);
-
-  const BAR_BLOCKS = 20;
-  const filledBlocks = Math.round(Math.min(spentNum, 100) / 100 * BAR_BLOCKS);
-  const blockColor = spentNum > 100 ? "#8b2000" : spentNum > 90 ? "#6b5000" : "#2a5a00";
+  const pct = budget > 0 ? (actual / budget) * 100 : 0;
+  const pctDisplay = pct.toFixed(0);
+  const barColor = pct > 100 ? C.red : pct > 90 ? C.yellow : C.green;
+  const isOver = variance > 0;
 
   return (
-    <div onClick={onClick} style={{ ...styles.card, ...(selected ? styles.cardSelected : {}) }}>
-      <div style={styles.cardId}>{prog.id} / {prog.type}</div>
+    <div
+      onClick={onClick}
+      style={{ ...styles.card, ...(selected ? styles.cardSelected : {}) }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+        <div style={styles.cardId}>{prog.id}</div>
+        <span style={{ ...styles.pill, background: isOver ? "rgba(248,81,73,0.15)" : "rgba(63,185,80,0.15)", color: isOver ? C.red : C.green }}>
+          {isOver ? "▲ OVER" : "▼ UNDER"}
+        </span>
+      </div>
       <div style={styles.cardName}>{prog.name}</div>
-      <div style={styles.cardMeta}>{prog.contract}</div>
-      <div style={styles.burnBarWrap}>
-        {Array.from({ length: BAR_BLOCKS }, (_, i) => (
-          <div key={i} style={{ ...styles.burnBlock, background: i < filledBlocks ? blockColor : "#1a1a00" }} />
-        ))}
+      <div style={styles.cardMeta}>{prog.contract} · {prog.type}</div>
+      <div style={styles.burnTrack}>
+        <div style={{ ...styles.burnFill, width: `${Math.min(pct, 100)}%`, background: barColor }} />
       </div>
       <div style={styles.cardFooter}>
-        <span style={{ color: "#6b6000", fontFamily: "'Courier New', monospace", fontSize: 10 }}>{spent}% SPENT</span>
-        <span style={{ color: variance > 0 ? "#8b2000" : "#2a5a00", fontFamily: "'Courier New', monospace", fontSize: 10 }}>
-          {variance > 0 ? "[+]" : "[-]"} {fmt(Math.abs(variance))}
+        <span style={{ color: C.textMuted, fontFamily: MONO, fontSize: 11 }}>{pctDisplay}% spent</span>
+        <span style={{ color: isOver ? C.red : C.green, fontFamily: MONO, fontSize: 11 }}>
+          {isOver ? "+" : ""}{fmtShort(variance)}
         </span>
       </div>
     </div>
@@ -117,21 +171,15 @@ function VarianceTable({ pid, progName, onQuery }) {
     setLoading(true);
     setError(null);
     onQuery(QUERIES.variance(pid));
-
     Promise.all([
       fetch(`${API}/programs/${pid}/variance`).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
       fetch(`${API}/programs/${pid}/eac`).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
     ])
-      .then(([varData, eacData]) => {
-        setRows(varData.rows);
-        setCpi(eacData.cpi);
-        setLoading(false);
-      })
+      .then(([varData, eacData]) => { setRows(varData.rows); setCpi(eacData.cpi); setLoading(false); })
       .catch((e) => { setError(e.message); setLoading(false); });
   }, [pid, refreshKey]);
 
-  const openModal = (row) =>
-    setModal({ open: true, element: row.cost_element, amount: String(row.actual) });
+  const openModal = (row) => setModal({ open: true, element: row.cost_element, amount: String(row.actual) });
   const closeModal = () => setModal({ open: false, element: "", amount: "" });
 
   const handleSave = () => {
@@ -168,48 +216,48 @@ function VarianceTable({ pid, progName, onQuery }) {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return <div style={styles.loadingText}>// RETRIEVING VARIANCE DATA...</div>;
-  if (error) return <div style={styles.errorText}>// ERROR: {error}</div>;
+  if (loading) return <div style={styles.stateText}>Loading variance data…</div>;
+  if (error) return <div style={{ ...styles.stateText, color: C.red }}>Error: {error}</div>;
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-        <button onClick={exportCsv} style={styles.csvBtn}>[↓ EXPORT CSV]</button>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button onClick={exportCsv} style={styles.btnOutline}>↓ Export CSV</button>
       </div>
       <div style={styles.tableWrap}>
         <table style={styles.table}>
           <thead>
             <tr>
-              {["COST ELEMENT", "BUDGET", "ACTUAL", "VARIANCE", "VAR %", "EAC", "STATUS", ""].map((h) => (
-                <th key={h} style={styles.th}>{h}</th>
+              {["Cost Element", "Budget", "Actual", "Variance", "Var %", "EAC", "Status", ""].map((h) => (
+                <th key={h} style={{ ...styles.th, textAlign: h === "Cost Element" || h === "" ? "left" : "right" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
+            {rows.map((row, i) => {
               const { cost_element: el, budget: b, actual: a, variance: v, variance_pct: vp } = row;
               const eac = cpi && cpi > 0 ? b / cpi : a;
-              const statusLabel = Math.abs(vp) < 3 ? "[OK]" : vp > 0 ? "[OVER]" : "[UNDER]";
-              const statusColor = Math.abs(vp) < 3 ? "#4a4a00" : vp > 0 ? "#8b2000" : "#2a5a00";
+              const over = vp > 3;
+              const under = vp < -3;
               return (
-                <tr key={el} className="fin-row" style={styles.tr}>
+                <tr key={el} className="fin-row" style={{ background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.016)" }}>
                   <td style={styles.td}>{el}</td>
-                  <td style={{ ...styles.td, ...styles.tdNum, color: "#6b6000" }}>{fmt(b)}</td>
-                  <td style={{ ...styles.td, ...styles.tdNum }}>{fmt(a)}</td>
-                  <td style={{ ...styles.td, ...styles.tdNum, color: v > 0 ? "#8b2000" : "#2a5a00" }}>
+                  <td style={{ ...styles.td, ...styles.tdR, color: C.textMuted }}>{fmt(b)}</td>
+                  <td style={{ ...styles.td, ...styles.tdR }}>{fmt(a)}</td>
+                  <td style={{ ...styles.td, ...styles.tdR, color: v > 0 ? C.red : C.green, fontFamily: MONO }}>
                     {v > 0 ? "+" : ""}{fmt(v)}
                   </td>
-                  <td style={{ ...styles.td, ...styles.tdNum, color: varColor(vp) }}>
+                  <td style={{ ...styles.td, ...styles.tdR, color: varColor(vp), fontFamily: MONO }}>
                     {vp > 0 ? "+" : ""}{vp}%
                   </td>
-                  <td style={{ ...styles.td, ...styles.tdNum, color: "#6b6000" }}>
-                    {fmt(eac)}
+                  <td style={{ ...styles.td, ...styles.tdR, color: C.textMuted, fontFamily: MONO }}>{fmt(eac)}</td>
+                  <td style={{ ...styles.td, textAlign: "center" }}>
+                    {over && <span style={{ ...styles.pill, background: "rgba(248,81,73,0.15)", color: C.red }}>OVER</span>}
+                    {under && <span style={{ ...styles.pill, background: "rgba(63,185,80,0.15)", color: C.green }}>UNDER</span>}
+                    {!over && !under && <span style={{ ...styles.pill, background: "rgba(139,148,158,0.1)", color: C.textMuted }}>ON TRACK</span>}
                   </td>
-                  <td style={{ ...styles.td, color: statusColor, letterSpacing: "0.08em" }}>
-                    {statusLabel}
-                  </td>
-                  <td style={styles.td}>
-                    <button onClick={() => openModal(row)} style={styles.editBtn}>[EDIT]</button>
+                  <td style={{ ...styles.td, textAlign: "right" }}>
+                    <button onClick={() => openModal(row)} style={styles.btnGhost}>Edit</button>
                   </td>
                 </tr>
               );
@@ -221,13 +269,10 @@ function VarianceTable({ pid, progName, onQuery }) {
       {modal.open && (
         <div style={styles.overlay}>
           <div style={styles.modalBox}>
-            <div style={styles.modalTitle}>// UPDATE ACTUAL · {pid}</div>
+            <div style={styles.modalTitle}>Update Actual Cost</div>
+            <div style={styles.modalSub}>{pid} · {modal.element}</div>
             <div>
-              <div style={styles.modalLabel}>COST ELEMENT</div>
-              <div style={{ ...styles.input, color: "#e8d000", cursor: "default" }}>{modal.element}</div>
-            </div>
-            <div>
-              <div style={styles.modalLabel}>ACTUAL AMOUNT (USD)</div>
+              <div style={styles.modalLabel}>Actual Amount (USD)</div>
               <input
                 type="number"
                 value={modal.amount}
@@ -237,9 +282,9 @@ function VarianceTable({ pid, progName, onQuery }) {
               />
             </div>
             <div style={styles.btnRow}>
-              <button onClick={closeModal} style={styles.btnSecondary} disabled={saving}>[CANCEL]</button>
+              <button onClick={closeModal} style={styles.btnOutline} disabled={saving}>Cancel</button>
               <button onClick={handleSave} style={styles.btnPrimary} disabled={saving}>
-                {saving ? "[WRITING...]" : "[CONFIRM]"}
+                {saving ? "Saving…" : "Save Changes"}
               </button>
             </div>
           </div>
@@ -258,10 +303,17 @@ function BurnChart({ pid, onQuery }) {
     setLoading(true);
     setError(null);
     onQuery(QUERIES.burnrate(pid));
-
     fetch(`${API}/programs/${pid}/burn`)
       .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-      .then((d) => { setData(d.months); setLoading(false); })
+      .then((d) => {
+        let cumBudget = 0, cumActual = 0;
+        setData(d.months.map((m) => {
+          cumBudget += m.budget;
+          cumActual += m.actual;
+          return { ...m, cumBudget, cumActual };
+        }));
+        setLoading(false);
+      })
       .catch((e) => { setError(e.message); setLoading(false); });
   }, [pid]);
 
@@ -269,29 +321,32 @@ function BurnChart({ pid, onQuery }) {
     if (!active || !payload?.length) return null;
     return (
       <div style={styles.tooltip}>
-        <div style={{ color: "#c8b400", fontFamily: "'Courier New', monospace", marginBottom: 4, fontSize: 11 }}>{label}</div>
+        <div style={{ fontFamily: SANS, fontWeight: 600, color: C.text, marginBottom: 6, fontSize: 12 }}>{label}</div>
         {payload.map((p) => (
-          <div key={p.name} style={{ color: p.color, fontFamily: "'Courier New', monospace", fontSize: 11 }}>
-            {p.name.toUpperCase()}: {fmt(p.value)}
+          <div key={p.name} style={{ display: "flex", justifyContent: "space-between", gap: 16, fontFamily: MONO, fontSize: 11, color: p.color, marginBottom: 2 }}>
+            <span>{p.name}</span><span>{fmt(p.value)}</span>
           </div>
         ))}
       </div>
     );
   };
 
-  if (loading) return <div style={{ ...styles.loadingText, height: 220, display: "flex", alignItems: "center" }}>// RETRIEVING BURN DATA...</div>;
-  if (error) return <div style={styles.errorText}>// ERROR: {error}</div>;
+  if (loading) return <div style={styles.stateText}>Loading burn data…</div>;
+  if (error) return <div style={{ ...styles.stateText, color: C.red }}>Error: {error}</div>;
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <BarChart data={data} barGap={2}>
-        <CartesianGrid strokeDasharray="2 4" stroke="#1a1a00" vertical={false} />
-        <XAxis dataKey="month" tick={{ fill: "#6b6000", fontFamily: "'Courier New', monospace", fontSize: 10 }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fill: "#6b6000", fontFamily: "'Courier New', monospace", fontSize: 9 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-        <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(200,180,0,0.03)" }} />
-        <Bar dataKey="budget" name="Budget" fill="#2a2a00" radius={0} />
-        <Bar dataKey="actual" name="Actual" fill="#c8b400" radius={0} />
-      </BarChart>
+    <ResponsiveContainer width="100%" height={240}>
+      <ComposedChart data={data} barGap={3} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 6" stroke={C.surfaceHigh} vertical={false} />
+        <XAxis dataKey="month" tick={{ fill: C.textMuted, fontFamily: MONO, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis yAxisId="monthly" tick={{ fill: C.textMuted, fontFamily: MONO, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} width={46} />
+        <YAxis yAxisId="cumulative" orientation="right" tick={{ fill: C.textDim, fontFamily: MONO, fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v/1000000).toFixed(1)}M`} width={46} />
+        <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
+        <Bar yAxisId="monthly" dataKey="budget" name="Budget" fill={C.surfaceHigh} radius={[3, 3, 0, 0]} />
+        <Bar yAxisId="monthly" dataKey="actual" name="Actual" fill={C.blue} radius={[3, 3, 0, 0]} fillOpacity={0.85} />
+        <Line yAxisId="cumulative" type="monotone" dataKey="cumBudget" name="Cum. Budget" stroke={C.textDim} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
+        <Line yAxisId="cumulative" type="monotone" dataKey="cumActual" name="Cum. Actual" stroke={C.yellow} strokeWidth={2} dot={{ r: 3, fill: C.yellow }} />
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }
@@ -299,38 +354,47 @@ function BurnChart({ pid, onQuery }) {
 function SummaryTable({ rows, loading, error, onQuery }) {
   useEffect(() => { onQuery(QUERIES.summary()); }, []);
 
-  if (loading) return <div style={styles.loadingText}>// RETRIEVING PORTFOLIO DATA...</div>;
-  if (error) return <div style={styles.errorText}>// ERROR: {error}</div>;
+  if (loading) return <div style={styles.stateText}>Loading portfolio data…</div>;
+  if (error) return <div style={{ ...styles.stateText, color: C.red }}>Error: {error}</div>;
 
   return (
     <div style={styles.tableWrap}>
       <table style={styles.table}>
         <thead>
           <tr>
-            {["PROGRAM", "CONTRACT", "TYPE", "BUDGET", "ACTUAL", "VARIANCE", "% SPENT"].map((h) => (
-              <th key={h} style={styles.th}>{h}</th>
+            {[
+              { h: "Program", r: false },
+              { h: "Contract", r: false },
+              { h: "Type", r: false },
+              { h: "Budget", r: true },
+              { h: "Actual", r: true },
+              { h: "Variance", r: true },
+              { h: "% Spent", r: true },
+            ].map(({ h, r }) => (
+              <th key={h} style={{ ...styles.th, textAlign: r ? "right" : "left" }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {rows.map((row, i) => {
             const { program_id, name, contract, type, total_budget, total_actual, variance: v, pct_spent: sp } = row;
             const spNum = Number(sp);
             return (
-              <tr key={program_id} className="fin-row" style={styles.tr}>
+              <tr key={program_id} className="fin-row" style={{ background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.016)" }}>
                 <td style={styles.td}>
-                  <span style={{ color: "#e8d000" }}>{program_id}</span>
-                  <span style={{ color: "#6b6000" }}> / </span>
-                  {name}
+                  <span style={{ color: C.blue, fontFamily: MONO, fontSize: 11, marginRight: 8 }}>{program_id}</span>
+                  <span style={{ color: C.text }}>{name}</span>
                 </td>
-                <td style={{ ...styles.td, color: "#6b6000", fontSize: 10 }}>{contract}</td>
-                <td style={styles.td}><span style={styles.typeBadge}>[{type}]</span></td>
-                <td style={{ ...styles.td, ...styles.tdNum, color: "#6b6000" }}>{fmt(total_budget)}</td>
-                <td style={{ ...styles.td, ...styles.tdNum }}>{fmt(total_actual)}</td>
-                <td style={{ ...styles.td, ...styles.tdNum, color: v > 0 ? "#8b2000" : "#2a5a00" }}>
+                <td style={{ ...styles.td, color: C.textMuted, fontFamily: MONO, fontSize: 11 }}>{contract}</td>
+                <td style={styles.td}>
+                  <span style={{ ...styles.pill, background: "rgba(56,139,253,0.12)", color: C.blue }}>{type}</span>
+                </td>
+                <td style={{ ...styles.td, ...styles.tdR, color: C.textMuted, fontFamily: MONO }}>{fmt(total_budget)}</td>
+                <td style={{ ...styles.td, ...styles.tdR, fontFamily: MONO }}>{fmt(total_actual)}</td>
+                <td style={{ ...styles.td, ...styles.tdR, color: v > 0 ? C.red : C.green, fontFamily: MONO }}>
                   {v > 0 ? "+" : ""}{fmt(v)}
                 </td>
-                <td style={{ ...styles.td, ...styles.tdNum, color: spNum > 100 ? "#8b2000" : spNum > 90 ? "#6b5000" : "#2a5a00" }}>
+                <td style={{ ...styles.td, ...styles.tdR, fontFamily: MONO, color: spNum > 100 ? C.red : spNum > 90 ? C.yellow : C.green }}>
                   {sp}%
                 </td>
               </tr>
@@ -346,6 +410,7 @@ function SummaryTable({ rows, loading, error, onQuery }) {
 export default function App() {
   const [programs, setPrograms] = useState([]);
   const [summary, setSummary] = useState([]);
+  const [eacData, setEacData] = useState(null);
   const [programsLoading, setProgramsLoading] = useState(true);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState(null);
@@ -365,56 +430,60 @@ export default function App() {
       .catch((e) => { setSummaryError(e.message); setSummaryLoading(false); });
   }, []);
 
+  useEffect(() => {
+    setEacData(null);
+    fetch(`${API}/programs/${selected}/eac`)
+      .then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then(setEacData)
+      .catch(() => {});
+  }, [selected]);
+
   const summaryMap = Object.fromEntries(summary.map((s) => [s.program_id, s]));
+  const selectedProg = programs.find((p) => p.id === selected);
 
   return (
     <>
       <style>{`
-        @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-        .sql-cursor { animation: blink 1.1s step-end infinite; color: #c8b400; }
-        .fin-row:hover > td { background: rgba(200,180,0,0.035) !important; }
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
         * { box-sizing: border-box; }
+        body { margin: 0; }
+        .fin-row:hover > td { background: rgba(255,255,255,0.04) !important; }
         input[type=number]::-webkit-outer-spin-button,
         input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
         input[type=number] { -moz-appearance: textfield; }
+        button:hover { opacity: 0.82; }
       `}</style>
 
       <div style={styles.root}>
-        {/* Classification banner */}
-        <div style={styles.classBar}>
-          UNCLASSIFIED // FOR OFFICIAL USE ONLY // NOT FOR PUBLIC RELEASE
-        </div>
-
         {/* Header */}
         <div style={styles.header}>
-          <div>
-            <div style={styles.headerEyebrow}>LEONARDO DRS · LAND ELECTRONICS · DEFENSE FINANCE SYSTEM</div>
-            <div style={styles.headerTitle}>PROGRAM COST ANALYSIS TERMINAL</div>
-            <div style={styles.headerSub}>SESSION OPENED: {SESSION_TS} · FY2026 · PERIOD 05 OF 12</div>
-          </div>
-          <div style={styles.headerRight}>
-            <div style={styles.headerMeta}>OPERATOR: [CLASSIFIED]</div>
-            <div
-              role="button"
-              onClick={() => setView(view === "detail" ? "summary" : "detail")}
-              style={{ ...styles.headerMeta, cursor: "pointer", color: "#e8d000", userSelect: "none", marginTop: 6 }}
-            >
-              {view === "detail" ? "[→ PORTFOLIO VIEW]" : "[→ PROGRAM VIEW]"}
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={styles.logo}>
+              <div style={styles.logoMark}>DRS</div>
             </div>
+            <div>
+              <div style={styles.headerEyebrow}>Leonardo DRS · Land Electronics</div>
+              <div style={styles.headerTitle}>Program Finance Tracker</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+            <div style={styles.headerBadge}>FY2026 · Period 5 / 12</div>
+            <button
+              onClick={() => setView(view === "detail" ? "summary" : "detail")}
+              style={view === "summary" ? styles.btnPrimary : styles.btnOutline}
+            >
+              {view === "detail" ? "Portfolio View" : "Program View"}
+            </button>
           </div>
         </div>
 
         {view === "summary" ? (
           <div style={styles.body}>
-            <div style={styles.section}>
-              <div style={styles.sectionTitle}>// PORTFOLIO SUMMARY</div>
-              <SummaryTable
-                rows={summary}
-                loading={summaryLoading}
-                error={summaryError}
-                onQuery={setActiveQuery}
-              />
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionTitle}>Portfolio Summary</div>
+              <div style={styles.sectionSub}>All programs · FY2026</div>
             </div>
+            <SummaryTable rows={summary} loading={summaryLoading} error={summaryError} onQuery={setActiveQuery} />
             <SqlPanel query={activeQuery} />
           </div>
         ) : (
@@ -422,7 +491,7 @@ export default function App() {
             {/* Program selector */}
             <div style={styles.cardRow}>
               {programsLoading
-                ? <div style={styles.loadingText}>// LOADING PROGRAMS...</div>
+                ? <div style={styles.stateText}>Loading programs…</div>
                 : programs.map((p) => (
                   <ProgramCard
                     key={p.id}
@@ -435,31 +504,38 @@ export default function App() {
               }
             </div>
 
+            {/* KPI bar */}
+            <KpiBar summary={summaryMap[selected]} eacData={eacData} />
+
             <div style={styles.twoCol}>
               {/* Left: variance table */}
-              <div style={{ flex: 1.6 }}>
-                <div style={styles.sectionTitle}>// COST ELEMENT VARIANCE ANALYSIS</div>
-                <VarianceTable pid={selected} progName={programs.find((p) => p.id === selected)?.name} onQuery={setActiveQuery} />
+              <div style={{ flex: 1.6, minWidth: 0 }}>
+                <div style={styles.sectionHeader}>
+                  <div style={styles.sectionTitle}>Cost Element Variance</div>
+                  {selectedProg && <div style={styles.sectionSub}>{selectedProg.name} · {selectedProg.contract}</div>}
+                </div>
+                <VarianceTable pid={selected} progName={selectedProg?.name} onQuery={setActiveQuery} />
               </div>
 
               {/* Right: burn chart */}
-              <div style={{ flex: 1 }}>
-                <div style={styles.sectionTitle}>// MONTHLY BURN RATE</div>
-                <div style={{ marginBottom: 8, color: "#4a4a00", fontSize: 10, fontFamily: "'Courier New', monospace", letterSpacing: "0.1em" }}>
-                  ■ BUDGET &nbsp;&nbsp; ■ ACTUAL (USD)
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.sectionHeader}>
+                  <div style={styles.sectionTitle}>Monthly Burn Rate</div>
+                  <div style={styles.sectionSub}>
+                    <span style={{ color: C.textDim }}>■</span> Budget &nbsp;
+                    <span style={{ color: C.blue }}>■</span> Actual &nbsp;
+                    <span style={{ color: C.yellow }}>—</span> Cumulative
+                  </div>
                 </div>
-                <BurnChart pid={selected} onQuery={setActiveQuery} />
+                <div style={styles.chartCard}>
+                  <BurnChart pid={selected} onQuery={setActiveQuery} />
+                </div>
               </div>
             </div>
 
             <SqlPanel query={activeQuery} />
           </div>
         )}
-
-        {/* Footer classification banner */}
-        <div style={{ ...styles.classBar, borderTop: "1px solid #2a2a00", borderBottom: "none", marginTop: 8 }}>
-          UNCLASSIFIED // FOR OFFICIAL USE ONLY // NOT FOR PUBLIC RELEASE
-        </div>
       </div>
     </>
   );
@@ -468,248 +544,329 @@ export default function App() {
 // ── Styles ────────────────────────────────────────────────────────────────────
 const styles = {
   root: {
-    background: "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.18) 2px, rgba(0,0,0,0.18) 4px), #0a0a00",
+    background: C.bg,
     minHeight: "100vh",
-    color: "#c8b400",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 12,
-  },
-  classBar: {
-    background: "#0a0a00",
-    borderBottom: "1px solid #2a2a00",
-    padding: "3px 28px",
-    fontSize: 9,
-    fontFamily: "'Courier New', Courier, monospace",
-    color: "#4a4a00",
-    letterSpacing: "0.25em",
-    textAlign: "center",
+    color: C.text,
+    fontFamily: SANS,
+    fontSize: 13,
   },
   header: {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "flex-start",
-    padding: "18px 28px 14px",
-    borderBottom: "1px solid #2a2a00",
-    background: "#0a0a00",
+    alignItems: "center",
+    padding: "14px 28px",
+    borderBottom: `1px solid ${C.border}`,
+    background: C.surface,
+  },
+  logo: {
+    width: 40,
+    height: 40,
+    background: C.blue,
+    borderRadius: 8,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  logoMark: {
+    fontFamily: MONO,
+    fontWeight: 500,
+    fontSize: 12,
+    color: "#fff",
+    letterSpacing: "0.05em",
   },
   headerEyebrow: {
-    fontSize: 9,
-    letterSpacing: "0.3em",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
-    marginBottom: 6,
+    fontSize: 11,
+    color: C.textMuted,
+    letterSpacing: "0.02em",
+    marginBottom: 2,
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    letterSpacing: "0.25em",
-    color: "#e8d000",
-    fontFamily: "'Courier New', Courier, monospace",
-    marginBottom: 4,
+    fontSize: 16,
+    fontWeight: 600,
+    color: C.text,
+    letterSpacing: "-0.01em",
   },
-  headerSub: {
-    fontSize: 9,
-    letterSpacing: "0.15em",
-    color: "#4a4a00",
-    fontFamily: "'Courier New', Courier, monospace",
+  headerBadge: {
+    fontFamily: MONO,
+    fontSize: 11,
+    color: C.textMuted,
+    background: C.surfaceHigh,
+    border: `1px solid ${C.border}`,
+    borderRadius: 20,
+    padding: "3px 10px",
   },
-  headerRight: { textAlign: "right" },
-  headerMeta: { fontSize: 10, color: "#6b6000", fontFamily: "'Courier New', Courier, monospace", letterSpacing: "0.12em" },
-  body: { padding: "20px 28px", display: "flex", flexDirection: "column", gap: 20 },
+  body: {
+    padding: "24px 28px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 24,
+    maxWidth: 1400,
+  },
   cardRow: { display: "flex", gap: 12 },
   card: {
     flex: 1,
-    background: "#0f0f00",
-    border: "1px solid #2a2a00",
-    borderLeft: "3px solid transparent",
-    padding: "14px 16px 14px 14px",
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    padding: "16px",
     cursor: "pointer",
-    transition: "border-color 0.1s",
+    transition: "border-color 0.15s, background 0.15s",
   },
   cardSelected: {
-    borderLeft: "3px solid #e8d000",
-    background: "#141400",
-    borderTop: "1px solid #4a4a00",
-    borderRight: "1px solid #4a4a00",
-    borderBottom: "1px solid #4a4a00",
+    border: `1px solid ${C.borderActive}`,
+    background: "#1c2128",
+    boxShadow: `0 0 0 1px ${C.borderActive}22`,
   },
-  cardId: { fontSize: 9, fontFamily: "'Courier New', Courier, monospace", color: "#6b6000", marginBottom: 5, letterSpacing: "0.2em" },
-  cardName: { fontSize: 12, fontWeight: "bold", color: "#c8b400", marginBottom: 3, letterSpacing: "0.05em" },
-  cardMeta: { fontSize: 9, color: "#4a4a00", fontFamily: "'Courier New', Courier, monospace", marginBottom: 10, letterSpacing: "0.1em" },
-  burnBarWrap: { display: "flex", gap: 1, marginBottom: 10 },
-  burnBlock: { flex: 1, height: 4 },
-  cardFooter: { display: "flex", justifyContent: "space-between" },
-  twoCol: { display: "flex", gap: 24, alignItems: "flex-start" },
-  sectionTitle: {
-    fontSize: 9,
-    letterSpacing: "0.28em",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
+  cardId: {
+    fontFamily: MONO,
+    fontSize: 11,
+    color: C.blue,
+    fontWeight: 500,
+    letterSpacing: "0.05em",
+  },
+  cardName: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: C.text,
+    marginTop: 4,
+    marginBottom: 3,
+  },
+  cardMeta: {
+    fontSize: 11,
+    color: C.textMuted,
+    fontFamily: MONO,
     marginBottom: 12,
   },
-  section: {},
+  burnTrack: {
+    height: 4,
+    background: C.surfaceHigh,
+    borderRadius: 2,
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  burnFill: {
+    height: "100%",
+    borderRadius: 2,
+    transition: "width 0.4s ease",
+  },
+  cardFooter: { display: "flex", justifyContent: "space-between" },
+  kpiBar: {
+    display: "flex",
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  kpiTile: {
+    flex: 1,
+    padding: "14px 20px",
+  },
+  kpiLabel: {
+    fontSize: 11,
+    color: C.textMuted,
+    marginBottom: 4,
+    letterSpacing: "0.01em",
+  },
+  kpiValue: {
+    fontFamily: MONO,
+    fontSize: 20,
+    fontWeight: 500,
+    letterSpacing: "-0.02em",
+    marginBottom: 2,
+  },
+  kpiSub: {
+    fontFamily: MONO,
+    fontSize: 10,
+    color: C.textDim,
+    letterSpacing: "0.08em",
+  },
+  twoCol: { display: "flex", gap: 24, alignItems: "flex-start" },
+  sectionHeader: { marginBottom: 12 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: C.text,
+    marginBottom: 2,
+  },
+  sectionSub: {
+    fontSize: 11,
+    color: C.textMuted,
+    fontFamily: MONO,
+  },
+  chartCard: {
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    padding: "16px 8px 8px 8px",
+  },
   tableWrap: { overflowX: "auto" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: {
-    textAlign: "left",
-    padding: "7px 12px",
-    fontSize: 9,
-    letterSpacing: "0.2em",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
-    borderBottom: "1px solid #2a2a00",
+    padding: "8px 12px",
+    fontSize: 11,
+    fontWeight: 500,
+    color: C.textMuted,
+    borderBottom: `1px solid ${C.border}`,
     whiteSpace: "nowrap",
+    letterSpacing: "0.02em",
+    userSelect: "none",
   },
   td: {
-    padding: "8px 12px",
-    borderBottom: "1px solid #0f0f00",
-    fontSize: 11,
+    padding: "9px 12px",
+    borderBottom: `1px solid ${C.surfaceHigh}`,
+    fontSize: 12,
     whiteSpace: "nowrap",
-    fontFamily: "'Courier New', Courier, monospace",
-    color: "#c8b400",
+    color: C.text,
   },
-  tdNum: { textAlign: "right" },
-  tr: {},
-  typeBadge: {
-    color: "#e8d000",
+  tdR: { textAlign: "right" },
+  pill: {
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: 20,
     fontSize: 10,
-    fontFamily: "'Courier New', Courier, monospace",
-    letterSpacing: "0.1em",
+    fontWeight: 500,
+    letterSpacing: "0.04em",
+    fontFamily: MONO,
   },
   sqlPanel: {
-    background: "#0a0a00",
-    border: "1px solid #2a2a00",
-    borderLeft: "3px solid #4a4a00",
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderRadius: 8,
+    overflow: "hidden",
   },
   sqlHeader: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "6px 14px",
-    background: "#0f0f00",
-    borderBottom: "1px solid #2a2a00",
+    padding: "8px 16px",
+    borderBottom: `1px solid ${C.border}`,
+    background: C.surfaceHigh,
   },
-  sqlLabel: { fontSize: 9, fontFamily: "'Courier New', Courier, monospace", color: "#6b6000", letterSpacing: "0.2em" },
+  sqlDot: {
+    display: "inline-block",
+    width: 7,
+    height: 7,
+    borderRadius: "50%",
+    background: C.green,
+    boxShadow: `0 0 6px ${C.green}`,
+  },
+  sqlLabel: {
+    fontSize: 11,
+    fontFamily: MONO,
+    color: C.textMuted,
+    letterSpacing: "0.08em",
+  },
   copyBtn: {
-    fontSize: 9,
-    fontFamily: "'Courier New', Courier, monospace",
+    fontSize: 11,
+    fontFamily: SANS,
     background: "transparent",
-    border: "1px solid #2a2a00",
-    color: "#6b6000",
-    padding: "2px 8px",
+    border: `1px solid ${C.border}`,
+    color: C.textMuted,
+    padding: "3px 10px",
     cursor: "pointer",
-    letterSpacing: "0.12em",
+    borderRadius: 4,
   },
   sqlCode: {
     margin: 0,
-    padding: "12px 14px",
-    fontSize: 11,
-    fontFamily: "'Courier New', Courier, monospace",
-    color: "#c8b400",
-    lineHeight: 1.8,
+    padding: "16px",
+    fontSize: 12,
+    fontFamily: MONO,
+    color: "#79c0ff",
+    lineHeight: 1.75,
     overflowX: "auto",
   },
   tooltip: {
-    background: "#0f0f00",
-    border: "1px solid #2a2a00",
-    padding: "8px 12px",
-    fontSize: 11,
+    background: C.surfaceHigh,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    padding: "10px 14px",
+    fontSize: 12,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
   },
-  loadingText: {
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 11,
-    color: "#4a4a00",
-    letterSpacing: "0.12em",
-    padding: "20px 0",
+  stateText: {
+    fontFamily: SANS,
+    fontSize: 13,
+    color: C.textMuted,
+    padding: "24px 0",
   },
-  errorText: {
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 11,
-    color: "#8b2000",
-    padding: "20px 0",
-    letterSpacing: "0.1em",
-  },
-  editBtn: {
-    background: "transparent",
-    border: "1px solid #2a2a00",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 9,
-    padding: "2px 6px",
+  btnPrimary: {
+    background: C.blue,
+    border: "none",
+    color: "#fff",
+    fontFamily: SANS,
+    fontWeight: 500,
+    fontSize: 13,
+    padding: "7px 16px",
+    borderRadius: 6,
     cursor: "pointer",
-    letterSpacing: "0.1em",
   },
-  csvBtn: {
+  btnOutline: {
     background: "transparent",
-    border: "1px solid #2a2a00",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 9,
-    padding: "3px 10px",
+    border: `1px solid ${C.border}`,
+    color: C.text,
+    fontFamily: SANS,
+    fontSize: 13,
+    padding: "7px 16px",
+    borderRadius: 6,
     cursor: "pointer",
-    letterSpacing: "0.12em",
+  },
+  btnGhost: {
+    background: "transparent",
+    border: "none",
+    color: C.textMuted,
+    fontFamily: SANS,
+    fontSize: 12,
+    padding: "2px 8px",
+    cursor: "pointer",
+    borderRadius: 4,
   },
   overlay: {
     position: "fixed",
     inset: 0,
-    background: "rgba(10,10,0,0.92)",
+    background: "rgba(1,4,9,0.85)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 100,
+    backdropFilter: "blur(2px)",
   },
   modalBox: {
-    background: "#0f0f00",
-    border: "1px solid #4a4a00",
-    borderLeft: "3px solid #e8d000",
+    background: C.surface,
+    border: `1px solid ${C.border}`,
+    borderRadius: 12,
     padding: "24px 28px",
-    width: 380,
+    width: 400,
     display: "flex",
     flexDirection: "column",
-    gap: 16,
+    gap: 18,
+    boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
   },
   modalTitle: {
-    fontSize: 10,
-    fontFamily: "'Courier New', Courier, monospace",
-    letterSpacing: "0.2em",
-    color: "#e8d000",
+    fontSize: 16,
+    fontWeight: 600,
+    color: C.text,
+  },
+  modalSub: {
+    fontSize: 12,
+    color: C.textMuted,
+    fontFamily: MONO,
+    marginTop: -12,
   },
   modalLabel: {
-    fontSize: 9,
-    fontFamily: "'Courier New', Courier, monospace",
-    color: "#6b6000",
-    letterSpacing: "0.15em",
-    marginBottom: 5,
+    fontSize: 12,
+    color: C.textMuted,
+    marginBottom: 6,
   },
   input: {
     width: "100%",
-    background: "#0a0a00",
-    border: "1px solid #2a2a00",
-    color: "#c8b400",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 12,
-    padding: "7px 10px",
+    background: C.bg,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    color: C.text,
+    fontFamily: MONO,
+    fontSize: 14,
+    padding: "9px 12px",
     outline: "none",
   },
-  btnRow: { display: "flex", gap: 8, justifyContent: "flex-end" },
-  btnPrimary: {
-    background: "#1a1a00",
-    border: "1px solid #e8d000",
-    color: "#e8d000",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 10,
-    padding: "6px 16px",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-  },
-  btnSecondary: {
-    background: "transparent",
-    border: "1px solid #2a2a00",
-    color: "#6b6000",
-    fontFamily: "'Courier New', Courier, monospace",
-    fontSize: 10,
-    padding: "6px 16px",
-    cursor: "pointer",
-    letterSpacing: "0.12em",
-  },
+  btnRow: { display: "flex", gap: 10, justifyContent: "flex-end" },
 };
