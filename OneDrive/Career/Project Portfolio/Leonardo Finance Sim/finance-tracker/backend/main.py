@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import get_connection, init_db
 from models import (
@@ -17,7 +20,7 @@ app = FastAPI(title="Finance Tracker API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://localhost:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -181,3 +184,9 @@ def update_actual(program_id: str, element: str, body: ActualUpdate):
     conn.close()
 
     return {"program_id": program_id, "cost_element": element, "amount": body.amount}
+
+
+# Serve built frontend — must be mounted last so API routes take priority
+_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="static")

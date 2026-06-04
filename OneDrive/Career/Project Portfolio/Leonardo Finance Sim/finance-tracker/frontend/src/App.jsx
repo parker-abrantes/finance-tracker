@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
          ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL ?? "";
 const MONO = "'IBM Plex Mono', 'Courier New', monospace";
 const SANS = "'IBM Plex Sans', -apple-system, sans-serif";
 
