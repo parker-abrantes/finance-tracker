@@ -104,6 +104,7 @@ function KpiBar({ summary, eacData }) {
   const cpi    = eacData?.cpi;
   const eac    = eacData?.eac;
   const vac    = eacData?.vac;
+  const cv     = eacData?.cv;
   const pct    = summary?.pct_spent ?? 0;
 
   const tiles = [
@@ -130,6 +131,12 @@ function KpiBar({ summary, eacData }) {
       color: vac == null ? C.textMuted : vac >= 0 ? C.green : C.red,
       iconBg: vac == null ? "rgba(139,148,158,0.1)" : vac >= 0 ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)",
       icon: vac == null ? "—" : vac >= 0 ? "+" : "−",
+    },
+    {
+      label: "Cost Variance", value: cv != null ? fmtShort(cv) : "—", sub: "CV",
+      color: cv == null ? C.textMuted : cv >= 0 ? C.green : C.red,
+      iconBg: cv == null ? "rgba(139,148,158,0.1)" : cv >= 0 ? "rgba(63,185,80,0.15)" : "rgba(248,81,73,0.15)",
+      icon: cv == null ? "—" : cv >= 0 ? "+" : "−",
     },
   ];
 

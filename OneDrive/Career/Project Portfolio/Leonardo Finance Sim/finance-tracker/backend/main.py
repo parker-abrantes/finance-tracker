@@ -125,6 +125,7 @@ def get_eac(program_id: str):
     cpi = round(total_budget / total_actual, 4) if total_actual else 1.0
     eac = round(total_budget / cpi, 2) if cpi else 0.0
     vac = round(total_budget - eac, 2)
+    cv = round(total_budget - total_actual, 2)
     pct_spent = round(total_actual / total_budget * 100, 1) if total_budget else 0.0
 
     return EACResponse(
@@ -134,6 +135,7 @@ def get_eac(program_id: str):
         cpi=cpi,
         eac=eac,
         vac=vac,
+        cv=cv,
         pct_spent=pct_spent,
     )
 

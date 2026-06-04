@@ -42,6 +42,7 @@ class EACResponse(BaseModel):
     cpi: float
     eac: float
     vac: float
+    cv: float
     pct_spent: float
 
 
