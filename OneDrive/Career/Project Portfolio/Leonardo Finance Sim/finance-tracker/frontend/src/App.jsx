@@ -156,6 +156,27 @@ function KpiBar({ summary, eacData }) {
   );
 }
 
+function HealthBadge({ cpi }) {
+  if (cpi == null) return null;
+  let label, dotColor, bg, textColor;
+  if (cpi >= 1.0) {
+    label = "HEALTHY"; dotColor = C.green;
+    bg = "rgba(63,185,80,0.12)"; textColor = C.green;
+  } else if (cpi >= 0.9) {
+    label = "WATCH"; dotColor = C.yellow;
+    bg = "rgba(210,153,34,0.12)"; textColor = C.yellow;
+  } else {
+    label = "AT RISK"; dotColor = C.red;
+    bg = "rgba(248,81,73,0.12)"; textColor = C.red;
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: bg, border: `1px solid ${dotColor}22`, borderRadius: 20, padding: "2px 8px 2px 6px", fontFamily: MONO, fontSize: 9, fontWeight: 500, color: textColor, letterSpacing: "0.06em" }}>
+      <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: dotColor, boxShadow: `0 0 5px ${dotColor}` }} />
+      {label}
+    </span>
+  );
+}
+
 function ProgramCard({ prog, summary, selected, onClick }) {
   const budget   = summary?.total_budget ?? 0;
   const actual   = summary?.total_actual ?? 0;
@@ -163,14 +184,13 @@ function ProgramCard({ prog, summary, selected, onClick }) {
   const pct      = budget > 0 ? (actual / budget) * 100 : 0;
   const isOver   = variance > 0;
   const barColor = pct > 100 ? C.red : pct > 90 ? C.yellow : C.green;
+  const cpi      = budget > 0 && actual > 0 ? budget / actual : null;
 
   return (
     <div onClick={onClick} style={{ ...styles.card, ...(selected ? styles.cardSelected : {}) }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
         <span style={styles.cardId}>{prog.id}</span>
-        <span style={{ ...styles.pill, background: isOver ? "rgba(248,81,73,0.15)" : "rgba(63,185,80,0.15)", color: isOver ? C.red : C.green }}>
-          {isOver ? "▲ OVER" : "▼ UNDER"}
-        </span>
+        <HealthBadge cpi={cpi} />
       </div>
       <div style={styles.cardName}>{prog.name}</div>
       <div style={styles.cardMeta}>{prog.contract} · {prog.type}</div>
