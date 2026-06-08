@@ -2,7 +2,6 @@
 
 A full-stack defense contract finance dashboard simulating real-world EVM (Earned Value Management) reporting across multiple DoD programs.
 
-> **Built for:** Portfolio project for Leonardo DRS Business Operations Internship application (Fall 2026, Melbourne FL)
 
 ---
 
