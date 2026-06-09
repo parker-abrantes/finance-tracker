@@ -125,7 +125,7 @@ def init_db() -> None:
     cur.executemany("INSERT INTO actuals VALUES (?,?,?)", actuals)
 
     monthly_burn = [
-        # P001 — LYNX C2 System (monthly budget ~$294,583; actuals Jan–May, projections Jun–Dec)
+        # P001 — LYNX C2 System
         ("P001", "Jan",  1,  294583, 268200),
         ("P001", "Feb",  2,  294583, 301400),
         ("P001", "Mar",  3,  294583, 287600),
@@ -139,7 +139,7 @@ def init_db() -> None:
         ("P001", "Nov", 11,  294583, 0),
         ("P001", "Dec", 12,  294583, 0),
 
-        # P002 — SHORAD Integration (monthly budget ~$173,533; actuals Jan–May, projections Jun–Dec)
+        # P002 — SHORAD Integration
         ("P002", "Jan",  1,  173533, 158200),
         ("P002", "Feb",  2,  173533, 181400),
         ("P002", "Mar",  3,  173533, 167800),
@@ -153,7 +153,7 @@ def init_db() -> None:
         ("P002", "Nov", 11,  173533, 0),
         ("P002", "Dec", 12,  173533, 0),
 
-        # P003 — TITAN Vehicle Suite (monthly budget ~$140,983; actuals Jan–May, projections Jun–Dec)
+        # P003 — TITAN Vehicle Suite
         ("P003", "Jan",  1,  140983, 128400),
         ("P003", "Feb",  2,  140983, 134200),
         ("P003", "Mar",  3,  140983, 119800),
